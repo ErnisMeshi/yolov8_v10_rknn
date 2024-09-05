@@ -1,0 +1,179 @@
+diff --git a/ultralytics/cfg/__init__.py b/ultralytics/cfg/__init__.py
+index 0e081d1c..3f4a7ab9 100644
+--- a/ultralytics/cfg/__init__.py
++++ b/ultralytics/cfg/__init__.py
+@@ -587,7 +587,8 @@ def entrypoint(debug=""):
+     getattr(model, mode)(**overrides)  # default args from model
+ 
+     # Show help
+-    LOGGER.info(f"💡 Learn more at https://docs.ultralytics.com/modes/{mode}")
++    if mode != "export" or overrides["format"] != 'rknn':
++        LOGGER.info(f"💡 Learn more at https://docs.ultralytics.com/modes/{mode}")
+ 
+ 
+ # Special modes --------------------------------------------------------------------------------------------------------
+diff --git a/ultralytics/engine/exporter.py b/ultralytics/engine/exporter.py
+index 1fa3f2e1..63285468 100644
+--- a/ultralytics/engine/exporter.py
++++ b/ultralytics/engine/exporter.py
+@@ -108,6 +108,7 @@ def export_formats():
+         ["TensorFlow.js", "tfjs", "_web_model", True, False],
+         ["PaddlePaddle", "paddle", "_paddle_model", True, True],
+         ["NCNN", "ncnn", "_ncnn_model", True, True],
++        ["RKNN", "rknn", "_rknn.onnx", True, False],
+     ]
+     return pandas.DataFrame(x, columns=["Format", "Argument", "Suffix", "CPU", "GPU"])
+ 
+@@ -179,7 +180,7 @@ class Exporter:
+         flags = [x == fmt for x in fmts]
+         if sum(flags) != 1:
+             raise ValueError(f"Invalid export format='{fmt}'. Valid formats are {fmts}")
+-        jit, onnx, xml, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs, paddle, ncnn = flags  # export booleans
++        jit, onnx, xml, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs, paddle, ncnn, rknn = flags  # export booleans
+ 
+         # Device
+         if fmt == "engine" and self.args.device is None:
+@@ -307,6 +308,8 @@ class Exporter:
+             f[10], _ = self.export_paddle()
+         if ncnn:  # NCNN
+             f[11], _ = self.export_ncnn()
++        if rknn:  # RKNN
++            f[12], _ = self.export_rknn()
+ 
+         # Finish
+         f = [str(x) for x in f if x]  # filter out '' and None
+@@ -322,13 +325,20 @@ class Exporter:
+             imgsz = self.imgsz[0] if square else str(self.imgsz)[1:-1].replace(" ", "")
+             predict_data = f"data={data}" if model.task == "segment" and fmt == "pb" else ""
+             q = "int8" if self.args.int8 else "half" if self.args.half else ""  # quantization
+-            LOGGER.info(
+-                f'\nExport complete ({time.time() - t:.1f}s)'
+-                f"\nResults saved to {colorstr('bold', file.parent.resolve())}"
+-                f'\nPredict:         yolo predict task={model.task} model={f} imgsz={imgsz} {q} {predict_data}'
+-                f'\nValidate:        yolo val task={model.task} model={f} imgsz={imgsz} data={data} {q} {s}'
+-                f'\nVisualize:       https://netron.app'
+-            )
++            if rknn:
++                LOGGER.info(
++                    f'\nExport complete ({time.time() - t:.1f}s)'
++                    f"\nResults saved to {colorstr('bold', file.parent.resolve())}"
++                    f'\nVisualize:       https://netron.app'
++                )
++            else:
++                LOGGER.info(
++                    f'\nExport complete ({time.time() - t:.1f}s)'
++                    f"\nResults saved to {colorstr('bold', file.parent.resolve())}"
++                    f'\nPredict:         yolo predict task={model.task} model={f} imgsz={imgsz} {q} {predict_data}'
++                    f'\nValidate:        yolo val task={model.task} model={f} imgsz={imgsz} data={data} {q} {s}'
++                    f'\nVisualize:       https://netron.app'
++                )
+ 
+         self.run_callbacks("on_export_end")
+         return f  # return list of exported files/dirs
+@@ -411,6 +421,57 @@ class Exporter:
+         onnx.save(model_onnx, f)
+         return f, model_onnx
+ 
++    @try_export
++    def export_rknn(self, prefix=colorstr("RKNN:")):
++        """YOLOv8 ONNX export."""
++        requirements = ["onnx>=1.12.0"]
++        if self.args.simplify:
++            requirements += ["onnxsim>=0.4.33", "onnxruntime-gpu" if torch.cuda.is_available() else "onnxruntime"]
++            if ARM64:
++                check_requirements("cmake")  # 'cmake' is needed to build onnxsim on aarch64
++        check_requirements(requirements)
++        import onnx  # noqa
++
++        opset_version = self.args.opset or get_latest_opset()
++        LOGGER.info(f"\n{prefix} starting export with onnx {onnx.__version__} opset {opset_version}...")
++        f = str(self.file.with_suffix(".onnx"))
++
++        torch.onnx.export(
++            self.model.cpu(),
++            self.im.cpu(),
++            f,
++            verbose=False,
++            opset_version=opset_version,
++            do_constant_folding=True,  # WARNING: DNN inference with torch>=1.12 may require do_constant_folding=False
++            input_names=["images"],
++        )
++
++        # Checks
++        model_onnx = onnx.load(f)  # load onnx model
++        # onnx.checker.check_model(model_onnx)  # check onnx model
++
++        # Simplify
++        if self.args.simplify:
++            try:
++                import onnxsim
++
++                LOGGER.info(f"{prefix} simplifying with onnxsim {onnxsim.__version__}...")
++                # subprocess.run(f'onnxsim "{f}" "{f}"', shell=True)
++                model_onnx, check = onnxsim.simplify(model_onnx)
++                assert check, "Simplified ONNX model could not be validated"
++            except Exception as e:
++                LOGGER.info(f"{prefix} simplifier failure: {e}")
++
++        # Metadata
++        for k, v in self.metadata.items():
++            meta = model_onnx.metadata_props.add()
++            meta.key, meta.value = k, str(v)
++
++        onnx.save(model_onnx, f)
++
++        LOGGER.info(f"\n{prefix} convert {f} to RKNN model using RKNN-Toolkit2, please refer to https://github.com/airockchip/rknn_model_zoo")
++        return f, model_onnx
++
+     @try_export
+     def export_openvino(self, prefix=colorstr("OpenVINO:")):
+         """YOLOv8 OpenVINO export."""
+diff --git a/ultralytics/nn/autobackend.py b/ultralytics/nn/autobackend.py
+index abd255c9..54a387e6 100644
+--- a/ultralytics/nn/autobackend.py
++++ b/ultralytics/nn/autobackend.py
+@@ -121,6 +121,7 @@ class AutoBackend(nn.Module):
+             paddle,
+             ncnn,
+             triton,
++            rknn,
+         ) = self._model_type(w)
+         fp16 &= pt or jit or onnx or xml or engine or nn_module or triton  # FP16
+         nhwc = coreml or saved_model or pb or tflite or edgetpu  # BHWC formats (vs torch BCWH)
+@@ -358,6 +359,8 @@ class AutoBackend(nn.Module):
+             from ultralytics.utils.triton import TritonRemoteModel
+ 
+             model = TritonRemoteModel(w)
++        elif rknn:
++            assert "for inference, please refer to https://github.com/airockchip/rknn_model_zoo"
+ 
+         # Any other format (unsupported)
+         else:
+diff --git a/ultralytics/nn/modules/head.py b/ultralytics/nn/modules/head.py
+index 5bc7c068..4cd96aea 100644
+--- a/ultralytics/nn/modules/head.py
++++ b/ultralytics/nn/modules/head.py
+@@ -76,6 +76,12 @@ class Detect(nn.Module):
+             y.append(torch.cat((cv2[i](x[i]), cv3[i](x[i])), 1))
+         return y
+ 
++    def forward_feat_rknn(self, x, cv2, cv3):
++        y = []
++        for i in range(self.nl):
++            y.append([cv2[i](x[i]), cv3[i](x[i]).sigmoid()])
++        return y
++
+     def forward(self, x):
+         """Concatenates and returns predicted bounding boxes and class probabilities."""
+         y = self.forward_feat(x, self.cv2, self.cv3)
+@@ -509,6 +515,10 @@ class v10Detect(Detect):
+         self.one2one_cv3 = copy.deepcopy(self.cv3)
+     
+     def forward(self, x):
++        if self.export and self.format == 'rknn':
++            one2one = self.forward_feat_rknn([xi.detach() for xi in x], self.one2one_cv2, self.one2one_cv3)
++            return one2one
++
+         one2one = self.forward_feat([xi.detach() for xi in x], self.one2one_cv2, self.one2one_cv3)
+         if not self.export:
+             one2many = super().forward(x)
