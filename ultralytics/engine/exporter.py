@@ -150,7 +150,7 @@ class Exporter:
         callbacks (list, optional): List of callback functions. Defaults to None.
     """
 
-    def __init__(self, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
+    def __init__(self,  input_height=640, input_width=640,cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
         """
         Initializes the Exporter class.
 
@@ -165,6 +165,8 @@ class Exporter:
 
         self.callbacks = _callbacks or callbacks.get_default_callbacks()
         callbacks.add_integration_callbacks(self)
+        self.input_height = input_height
+        self.input_width = input_width
 
     @smart_inference_mode()
     def __call__(self, model=None):
@@ -365,7 +367,9 @@ class Exporter:
         """YOLOv8 ONNX export."""
         requirements = ["onnx>=1.12.0"]
         if self.args.simplify:
-            requirements += ["onnxslim==0.1.31", "onnxruntime" + ("-gpu" if torch.cuda.is_available() else "")]
+            requirements += ["onnxsim>=0.4.33", "onnxruntime-gpu" if torch.cuda.is_available() else "onnxruntime"]
+            if ARM64:
+                check_requirements("cmake")  # 'cmake' is needed to build onnxsim on aarch64
         check_requirements(requirements)
         import onnx  # noqa
 
@@ -402,17 +406,14 @@ class Exporter:
         # Simplify
         if self.args.simplify:
             try:
-                import onnxslim
+                import onnxsim
 
-                LOGGER.info(f"{prefix} simplifying with onnxslim {onnxslim.__version__}...")
-                model_onnx = onnxslim.slim(model_onnx)
-                
-                # ONNX Simplifier (deprecated as must be compiled with 'cmake' in aarch64 and Conda CI environments)
-                # import onnxsim
-                # model_onnx, check = onnxsim.simplify(model_onnx)
-                # assert check, "Simplified ONNX model could not be validated"
+                LOGGER.info(f"{prefix} simplifying with onnxsim {onnxsim.__version__}...")
+                # subprocess.run(f'onnxsim "{f}" "{f}"', shell=True)
+                model_onnx, check = onnxsim.simplify(model_onnx)
+                assert check, "Simplified ONNX model could not be validated"
             except Exception as e:
-                LOGGER.warning(f"{prefix} simplifier failure: {e}")
+                LOGGER.info(f"{prefix} simplifier failure: {e}")
 
         # Metadata
         for k, v in self.metadata.items():
@@ -436,10 +437,11 @@ class Exporter:
         opset_version = self.args.opset or get_latest_opset()
         LOGGER.info(f"\n{prefix} starting export with onnx {onnx.__version__} opset {opset_version}...")
         f = str(self.file.with_suffix(".onnx"))
+        dummy_input = torch.zeros(1, 3, self.input_height, self.input_width)
 
         torch.onnx.export(
             self.model.cpu(),
-            self.im.cpu(),
+            dummy_input,
             f,
             verbose=False,
             opset_version=opset_version,
@@ -718,7 +720,7 @@ class Exporter:
     def export_engine(self, prefix=colorstr("TensorRT:")):
         """YOLOv8 TensorRT export https://developer.nvidia.com/tensorrt."""
         assert self.im.device.type != "cpu", "export running on CPU but must be on GPU, i.e. use 'device=0'"
-        f_onnx, _ = self.export_onnx()  # run before TRT import https://github.com/ultralytics/ultralytics/issues/7016
+        f_onnx, _ = self.export_onnx()  # run before trt import https://github.com/ultralytics/ultralytics/issues/7016
 
         try:
             import tensorrt as trt  # noqa
@@ -803,7 +805,7 @@ class Exporter:
                 "onnx>=1.12.0",
                 "onnx2tf>=1.15.4,<=1.17.5",
                 "sng4onnx>=1.0.1",
-                "onnxslim==0.1.31",
+                "onnxsim>=0.4.33",
                 "onnx_graphsurgeon>=0.3.26",
                 "tflite_support",
                 "flatbuffers>=23.5.26,<100",  # update old 'flatbuffers' included inside tensorflow package
