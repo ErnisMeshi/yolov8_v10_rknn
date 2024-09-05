@@ -52,7 +52,7 @@ class Detect(nn.Module):
 
         if self.export and self.format in ("saved_model", "pb", "tflite", "edgetpu", "tfjs"):  # avoid TF FlexSplitV ops
             box = x_cat[:, : self.reg_max * 4]
-            cls = x_cat[:, self.reg_max * 4 :]
+            cls = x_cat[:, self.reg_max * 4:]
         else:
             box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
 
@@ -85,7 +85,7 @@ class Detect(nn.Module):
     def forward(self, x):
         """Concatenates and returns predicted bounding boxes and class probabilities."""
         y = self.forward_feat(x, self.cv2, self.cv3)
-        
+
         if self.training:
             return y
 
@@ -251,7 +251,7 @@ class WorldDetect(Detect):
 
         if self.export and self.format in ("saved_model", "pb", "tflite", "edgetpu", "tfjs"):  # avoid TF FlexSplitV ops
             box = x_cat[:, : self.reg_max * 4]
-            cls = x_cat[:, self.reg_max * 4 :]
+            cls = x_cat[:, self.reg_max * 4:]
         else:
             box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
 
@@ -282,23 +282,23 @@ class RTDETRDecoder(nn.Module):
     export = False  # export mode
 
     def __init__(
-        self,
-        nc=80,
-        ch=(512, 1024, 2048),
-        hd=256,  # hidden dim
-        nq=300,  # num queries
-        ndp=4,  # num decoder points
-        nh=8,  # num head
-        ndl=6,  # num decoder layers
-        d_ffn=1024,  # dim of feedforward
-        dropout=0.0,
-        act=nn.ReLU(),
-        eval_idx=-1,
-        # Training args
-        nd=100,  # num denoising
-        label_noise_ratio=0.5,
-        box_noise_scale=1.0,
-        learnt_init_query=False,
+            self,
+            nc=80,
+            ch=(512, 1024, 2048),
+            hd=256,  # hidden dim
+            nq=300,  # num queries
+            ndp=4,  # num decoder points
+            nh=8,  # num head
+            ndl=6,  # num decoder layers
+            d_ffn=1024,  # dim of feedforward
+            dropout=0.0,
+            act=nn.ReLU(),
+            eval_idx=-1,
+            # Training args
+            nd=100,  # num denoising
+            label_noise_ratio=0.5,
+            box_noise_scale=1.0,
+            learnt_init_query=False,
     ):
         """
         Initializes the RTDETRDecoder module with the given parameters.
@@ -410,7 +410,7 @@ class RTDETRDecoder(nn.Module):
 
             valid_WH = torch.tensor([w, h], dtype=dtype, device=device)
             grid_xy = (grid_xy.unsqueeze(0) + 0.5) / valid_WH  # (1, h, w, 2)
-            wh = torch.ones_like(grid_xy, dtype=dtype, device=device) * grid_size * (2.0**i)
+            wh = torch.ones_like(grid_xy, dtype=dtype, device=device) * grid_size * (2.0 ** i)
             anchors.append(torch.cat([grid_xy, wh], -1).view(-1, h * w, 4))  # (1, h*w, 4)
 
         anchors = torch.cat(anchors, 1)  # (1, h*w*nl, 4)
@@ -500,20 +500,20 @@ class RTDETRDecoder(nn.Module):
         for layer in self.input_proj:
             xavier_uniform_(layer[0].weight)
 
-class v10Detect(Detect):
 
-    max_det = 300
+class v10Detect(Detect):
+    max_det = -1
 
     def __init__(self, nc=80, ch=()):
         super().__init__(nc, ch)
         c3 = max(ch[0], min(self.nc, 100))  # channels
         self.cv3 = nn.ModuleList(nn.Sequential(nn.Sequential(Conv(x, x, 3, g=x), Conv(x, c3, 1)), \
                                                nn.Sequential(Conv(c3, c3, 3, g=c3), Conv(c3, c3, 1)), \
-                                                nn.Conv2d(c3, self.nc, 1)) for i, x in enumerate(ch))
+                                               nn.Conv2d(c3, self.nc, 1)) for i, x in enumerate(ch))
 
         self.one2one_cv2 = copy.deepcopy(self.cv2)
         self.one2one_cv3 = copy.deepcopy(self.cv3)
-    
+
     def forward(self, x):
         if self.export and self.format == 'rknn':
             one2one = self.forward_feat_rknn([xi.detach() for xi in x], self.one2one_cv2, self.one2one_cv3)
@@ -528,9 +528,9 @@ class v10Detect(Detect):
             if not self.export:
                 return {"one2many": one2many, "one2one": one2one}
             else:
-                assert(self.max_det != -1)
+                assert (self.max_det != -1)
                 boxes, scores, labels = ops.v10postprocess(one2one.permute(0, 2, 1), self.max_det, self.nc)
-                return torch.cat([boxes, scores.unsqueeze(-1), labels.unsqueeze(-1).to(boxes.dtype)], dim=-1)
+                return torch.cat([boxes, scores.unsqueeze(-1), labels.unsqueeze(-1)], dim=-1)
         else:
             return {"one2many": one2many, "one2one": one2one}
 

@@ -150,7 +150,7 @@ class Exporter:
         callbacks (list, optional): List of callback functions. Defaults to None.
     """
 
-    def __init__(self,  input_height=640, input_width=640,cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
+    def __init__(self, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
         """
         Initializes the Exporter class.
 
@@ -165,8 +165,6 @@ class Exporter:
 
         self.callbacks = _callbacks or callbacks.get_default_callbacks()
         callbacks.add_integration_callbacks(self)
-        self.input_height = input_height
-        self.input_width = input_width
 
     @smart_inference_mode()
     def __call__(self, model=None):
@@ -437,11 +435,10 @@ class Exporter:
         opset_version = self.args.opset or get_latest_opset()
         LOGGER.info(f"\n{prefix} starting export with onnx {onnx.__version__} opset {opset_version}...")
         f = str(self.file.with_suffix(".onnx"))
-        dummy_input = torch.zeros(1, 3, self.input_height, self.input_width)
 
         torch.onnx.export(
             self.model.cpu(),
-            dummy_input,
+            self.im.cpu(),
             f,
             verbose=False,
             opset_version=opset_version,
