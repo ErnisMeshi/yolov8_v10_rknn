@@ -84,6 +84,27 @@ class Detect(nn.Module):
 
     def forward(self, x):
         """Concatenates and returns predicted bounding boxes and class probabilities."""
+
+        if self.export and self.format == 'rknn':
+            bbox = []
+            for i in range(self.nl):
+                bbox.append(self.cv2[i](x[i]))
+                cls = torch.sigmoid(self.cv3[i](x[i]))
+                cls_sum = torch.clamp(cls.sum(1, keepdim=True), 0, 1)
+                bbox.append(cls)
+                bbox.append(cls_sum)
+
+            bboxes_combined = []
+            pair = 3
+            for i in range(pair):
+                combined_tensor = torch.cat([bbox[pair * i + 1], bbox[pair * i]], dim=1)
+                bboxes_combined.append(combined_tensor)
+
+            first = bboxes_combined[0]
+            second = bboxes_combined[1]
+            third = bboxes_combined[2]
+            return first, second, third
+
         y = self.forward_feat(x, self.cv2, self.cv3)
 
         if self.training:
@@ -180,8 +201,29 @@ class Pose(Detect):
     def forward(self, x):
         """Perform forward pass through YOLO model and return predictions."""
         bs = x[0].shape[0]  # batch size
-        kpt = torch.cat([self.cv4[i](x[i]).view(bs, self.nk, -1) for i in range(self.nl)], -1)  # (bs, 17*3, h*w)
-        x = self.detect(self, x)
+
+        if self.export and self.format == 'rknn':
+            kpt = [self.cv4[i](x[i]) for i in range(self.nl)]  # Collecting the raw output from convolutional layers
+        else:
+            kpt = torch.cat([self.cv4[i](x[i]).view(bs, self.nk, -1) for i in range(self.nl)], -1)  # (bs, 17*3, h*w)
+        x = Detect.forward(self, x)
+        if self.training:
+            return x, kpt
+        if self.export and self.format == 'rknn':
+            bbox_pairs = x
+
+            bboxes_combined = []
+            # pair = 3
+            for index, bbox in enumerate(bbox_pairs):
+                combined_tensor = torch.cat([bbox, kpt[index]], dim=1)
+                bboxes_combined.append(combined_tensor)
+
+            first = bboxes_combined[0]
+            second = bboxes_combined[1]
+            third = bboxes_combined[2]
+
+            return first, second, third  # Return the raw outputs for RKNN conversion
+
         if self.training:
             return x, kpt
         pred_kpt = self.kpts_decode(bs, kpt)
