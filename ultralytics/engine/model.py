@@ -560,6 +560,8 @@ class Model(nn.Module):
 
     def export(
         self,
+        input_height=640,
+        input_width=640,
         **kwargs,
     ):
         """
@@ -587,7 +589,7 @@ class Model(nn.Module):
 
         custom = {"imgsz": self.model.args["imgsz"], "batch": 1, "data": None, "verbose": False}  # method defaults
         args = {**self.overrides, **custom, **kwargs, "mode": "export"}  # highest priority args on the right
-        return Exporter(overrides=args, _callbacks=self.callbacks)(model=self.model)
+        return Exporter(input_height,input_width,overrides=args, _callbacks=self.callbacks)(model=self.model)
 
     def train(
         self,
